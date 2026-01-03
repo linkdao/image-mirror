@@ -19,8 +19,8 @@ jobs:
     # 运行条件 => issues 的 label 包含 image-mirror
     # if: contains(github.event.issue.labels.*.name, 'image-mirror')
     concurrency:
-      group: ${{ github.workflow }}-${{ github.actor }}
-      cancel-in-progress: true
+      group: ${{ github.workflow }}-${{ github.actor }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
     # 镜像转换任务的步骤列表
     steps:
 
@@ -50,6 +50,31 @@ jobs:
             2. 标题不重要,issue描述部分,每行一个镜像不要有其他内容,你可以直接更新你的issue
           reactions: hooray
           edit-mode: replace
+      - name: Update issue title with image summary
+        if: steps.check_body.outputs.is_image_format == 'true'
+        uses: actions/github-script@v5
+        with:
+          script: |
+            const issue_number = context.issue.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const body = context.payload.issue.body;
+
+            // 🧾 拆分 body，并跳过第一行
+            const lines = body.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+            const images = lines.slice(1); // 从第二行开始提取镜像名
+
+            const top3 = images.slice(0, 3).join(' | ');
+            const total = images.length;
+
+            const newTitle = `${top3}  (共 ${total} 个镜像)`;
+
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number,
+              title: newTitle
+            });
 
       - name: Add image-mirror label if body is image format
         if: steps.check_body.outputs.is_image_format == 'true'
@@ -91,7 +116,8 @@ jobs:
           sed -i 's/^[ \t]*//g' images-init.yml
           sed -i 's/[ \t]*$//g' images-init.yml
           sed -i '/^[  ]*$/d'   images-init.yml
-          img=$(cat images-init.yml)
+          # img=$(cat images-init.yml)
+          img=$(tail -n +2 images-init.yml)
           for i in ${img[@]}
           do
             tagName=$(echo $i | awk -F "/" '{print $NF}');
@@ -162,3 +188,20 @@ jobs:
             ${{ steps.get-comment-body.outputs.body }}
           reactions: hooray
           edit-mode: replace
+      - name: Add failure hint comment
+        if: failure() && steps.check_body.outputs.is_image_format == 'true'
+        uses: peter-evans/create-or-update-comment@v2
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          body: |
+            ❌ 镜像同步失败，请检查以下几点：
+            - 源镜像是否拼写错误？
+            - tag 是否存在（如 `latest`、`1.21`）？
+            - 该镜像是否为公开可拉取的镜像？
+            - 若为私有镜像，请确认目标 registry 有访问权限
+
+            可参考 logs：
+            [查看工作详情](https://github.com/${{ github.repository_owner }}/image-mirror/actions/runs/${{ github.run_id }})
+
+          reactions: confused
+
